@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+venv/
+
+# Jupyter & VS Code
+.ipynb_checkpoints/
+.vscode/
+*.code-workspace
+
+# Data artifacts
+data/raw/
+data/clean/
+data/merged/
+data/shards/
+data/meta/
+
+# Model artifacts
+*.pt
+*.bin
+*.ckpt
+*.npz
+
+# Tokenizers (keep if small)
+bpe_tokenizer.json
+
+# Logs
+logs/
+wandb/
+tensorboard/
