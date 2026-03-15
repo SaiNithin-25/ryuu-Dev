@@ -1,0 +1,71 @@
+Tokenizer diagnostics — 2025-12-16T14:29:52.265992
+
+Loaded file: tokenizer\bpe_tokenizer_postproc.json
+Vocab size (approx): 30000
+Special tokens mapping (sample):
+  '<pad>' -> 0
+  '<unk>' -> 1
+  '<s>' -> 2
+  '</s>' -> 3
+  '<|user|>' -> 4
+  '<|assistant|>' -> 5
+  '<|endofturn|>' -> 6
+
+Roundtrip tests:
+--- TEST 1 ---
+INPUT:
+def example_fn(x):
+    return x * 2
+IDS SAMPLE:
+572 1635 69 16468 14 94 851 168 219 409 610 406 393
+TOKENS SAMPLE:
+Ġdef Ġexample _ fn ( x ): Ċ ĠĠĠ Ġreturn Ġx Ġ* Ġ2
+DECODED:
+ def example_fn(x):
+    return x * 2
+ROUNDTRIP_OK: True
+
+--- TEST 2 ---
+INPUT:
+<|user|> Hello, how are you? <|assistant|>
+IDS SAMPLE:
+4 24653 18 701 757 678 37 172 5
+TOKENS SAMPLE:
+<|user|> ĠHello , Ġhow Ġare Ġyou ? Ġ <|assistant|>
+DECODED:
+ Hello, how are you? 
+ROUNDTRIP_OK: False
+
+--- TEST 3 ---
+INPUT:
+print('roundtrip test')
+IDS SAMPLE:
+507 529 3436 7290 1855 1043
+TOKENS SAMPLE:
+Ġprint (' round trip Ġtest ')
+DECODED:
+ print('roundtrip test')
+ROUNDTRIP_OK: True
+
+--- TEST 4 ---
+INPUT:
+Empty string test: ''
+IDS SAMPLE:
+23192 745 1855 32 8352
+TOKENS SAMPLE:
+ĠEmpty Ġstring Ġtest : Ġ''
+DECODED:
+ Empty string test: ''
+ROUNDTRIP_OK: True
+
+--- TEST 5 ---
+INPUT:
+Unicode test: café — résumé — 🚀
+IDS SAMPLE:
+541 4299 426 1855 32 222 756 17579 7364 492 17579 1505 17579 7364 16891 200 174
+TOKENS SAMPLE:
+ĠU nic ode Ġtest : Ġc af Ã© ĠâĢĶ Ġr Ã© sum Ã© ĠâĢĶ ĠðŁ ļ Ģ
+DECODED:
+ Unicode test: café — résumé — 🚀
+ROUNDTRIP_OK: True
+

@@ -1,0 +1,73 @@
+RYUU-AI FIX PLAN (TOP 10 + OTHER FIXES)
+=====================================
+
+Top 10 Priority Fixes
+---------------------
+1. Fix DPO trainer config loading crash.
+   - File: training/dpo/dpo_trainer.py
+   - Problem: RyuuGPTConfig.load_from_checkpoint(...) does not exist.
+   - Fix: load config from checkpoint dict if present, otherwise construct explicit RyuuGPTConfig matching checkpoint architecture.
+
+2. Fix tokenizer path mismatches across project.
+   - Files: training/dpo/dpo_trainer.py, experts/ryuu_dev_service.py, checks/test_config.py, testing/reasoning_test.py, training/old_training.py
+   - Problem: code references tokenizer/bpe_tokenizer.json but repo has tokenizer/bpe_tokenizer_postproc.json.
+   - Fix: normalize default path everywhere to tokenizer/bpe_tokenizer_postproc.json.
+
+3. Fix tokenizer encode API misuse (Encoding object vs list[int]).
+   - Files: training/dpo/dpo_trainer.py, training/trainer_utils.py, Inference/chat.py, experts/reasoning.py, experts/ryuu_dev_reflection.py, training/old_training.py, data_pipeline/07_tokenize_and_shard.py
+   - Problem: tokenizer.encode(...) is treated as list ids.
+   - Fix: use tokenizer.encode_ids(text) or tokenizer.encode(text).ids consistently.
+
+4. Fix generate() call signature mismatches.
+   - Files: Inference/chat.py, experts/ryuu_dev_reflection.py, training/trainer_utils.py, training/old_training.py
+   - Problem: callers pass eos_token_id=... but model.generate does not accept it.
+   - Fix: either add eos_token_id support in model.generate, or remove arg at all call sites and handle stop condition internally.
+
+5. Fix reasoning curriculum step propagation in main trainer.
+   - File: training/train_v3.1.py
+   - Problem: model.reasoning_head._current_step is never updated.
+   - Fix: set model._current_step and model.reasoning_head._current_step every step (as done in train_ryuugpt_v3.py).
+
+6. Fix double counting of reasoning loss.
+   - Files: model/Ryuu_gpt.py, training/train_v3.1.py (and similar trainers)
+   - Problem: reasoning loss added inside model forward and added again in trainer.
+   - Fix: choose one place only (preferred: trainer controls total loss weighting).
+
+7. Fix broken tokenizer training pipeline.
+   - File: data_pipeline/06_train_tokenizer.py
+   - Problem: BPETokenizer() called without required constructor arg; .train() method not implemented in wrapper.
+   - Fix: either implement training API in utils/bpe_tokenizer_v2.py or rewrite script to use tokenizers.Tokenizer/BpeTrainer directly.
+
+8. Fix DPO batching quality issue from pad leakage.
+   - File: training/dpo/dpo_dataset_fast.py
+   - Problem: batch generation pads prompts with token 0 and model attends to pad tokens.
+   - Fix: add attention mask support in model and pass mask during generation, or avoid right-padding contamination by per-length batching.
+
+9. Fix experts service checkpoint loading assumptions.
+   - File: experts/ryuu_dev_service.py
+   - Problem: assumes ckpt has config + model_state keys that may not exist.
+   - Fix: support multiple checkpoint formats (model/model_state/state_dict/raw) and fallback config path.
+
+10. Fix reflection module hard runtime errors.
+   - File: experts/ryuu_dev_reflection.py
+   - Problems: typos and malformed strings (jion, /n, worng/resoning), logic relying on missing reasoning input_ids.
+   - Fix: correct syntax/typos, simplify reflection path, and only use fields actually returned by reasoning head.
+
+Other Fixes (Secondary)
+-----------------------
+11. Clean duplicate/conflicting dataclass fields in model/config.py (use_value_head, pad_token_id).
+12. Wire reasoning_head_kwargs from config into ReasoningHeadV4 constructor.
+13. Remove/implement unused generate args in model/Ryuu_gpt.py (top_p, reasoning).
+14. Add/standardize gradient checkpointing enable path in training/train_v3.1.py.
+15. In training/train_ryuugpt_v3.py and training/train_ryuugpt_v3_full.py, move periodic checkpoint save outside is_best block.
+16. Fix checks/test_config.py use of model.num_parameters() (method absent).
+17. Fix testing/test_trainer_smoke.py imports (trainer.config/trainer.trainer missing) and typo cfg.dropou.
+18. Standardize TACO path casing in data_pipeline scripts (TACO vs taco) for cross-platform behavior.
+19. In tools scripts, make input/output paths configurable (avoid hard-coded data/raw paths).
+20. Add one compatibility helper for loading checkpoints and tokenizer in one place (shared utility) to remove repeated fragile logic.
+
+Suggested Execution Order
+-------------------------
+Phase 1 (Make training/inference runnable): 1,2,3,4,5,6
+Phase 2 (Stabilize data pipeline): 7,8,18
+Phase 3 (Harden experts/tests/tooling): 9,10,11,12,13,14,15,16,17,19,20

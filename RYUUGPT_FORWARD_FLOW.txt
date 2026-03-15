@@ -1,0 +1,74 @@
+RYUUGPT FORWARD TOKEN FLOW
+==========================
+
+File reference: model/Ryuu_gpt.py
+
+Input
+-----
+idx: [B, T] token ids
+(optional) targets: [B, T]
+
+Flow Diagram
+------------
+idx [B,T]
+  -> token_emb(idx) [B,T,D]
+  -> + pos_emb (only if RoPE disabled)
+  -> dropout
+  -> x [B,T,D]
+
+x
+  -> TransformerBlock x N (causal self-attention + FFN)
+     - each block keeps sequence shape [B,T,D]
+     - hidden states collected if reasoning head enabled
+
+x
+  -> final norm (RMSNorm or LayerNorm)
+  -> lm_head (tied with token_emb)
+  -> logits [B,T,V]
+
+Branch A: LM loss (if targets provided)
+---------------------------------------
+logits + targets
+  -> cross_entropy(ignore_index=pad_token_id)
+  -> loss_lm (scalar)
+
+Branch B: Value head (optional)
+-------------------------------
+x [B,T,D]
+  -> value_head
+  -> value [B,T]
+
+Branch C: Reasoning head (optional)
+-----------------------------------
+hidden_states + logits + targets
+  -> ReasoningHeadV4
+  -> reasoning dict:
+     - scores
+     - loss (aux)
+     - confidence
+     - token_weights
+     - info
+
+Loss composition in current code
+--------------------------------
+if targets:
+  total_loss = loss_lm
+  + reasoning['loss'] (if present)
+  + 0.05 * token_weighted_aux_loss (if token_weights present)
+
+Output Tuple
+------------
+(logits, loss, value, reasoning)
+
+Shapes Summary
+--------------
+B = batch size
+T = sequence length (<= context_size in generation loop)
+D = embedding size (n_embd)
+V = vocab size
+
+Notes
+-----
+- Causal masking is inside transformer attention, so token t only attends to <= t.
+- Generation path repeatedly calls forward() and samples from logits[:, -1, :].
+- LM head weight is tied to token embedding weight.

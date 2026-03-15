@@ -1,0 +1,31 @@
+# Core tensor and modeling stack
+torch>=2.5
+numpy>=2.0
+einops>=0.8
+safetensors>=0.4
+tokenizers>=0.20
+sentencepiece>=0.2
+typing_extensions>=4.12
+
+# Training and orchestration
+accelerate>=0.34
+torchdata>=0.7
+tqdm>=4.66
+tensorboard>=2.15
+psutil>=7.0
+GPUtil>=1.4
+
+# Data pipeline
+datasets>=2.21
+pyarrow>=16.0
+PyYAML>=6.0
+fsspec>=2024.0.0
+filelock>=3.16
+
+# Evaluation and experimentation
+scikit-learn>=1.5
+rich>=13.7
+colorama>=0.4.6
+
+# Optional analysis helpers
+pandas>=2.2

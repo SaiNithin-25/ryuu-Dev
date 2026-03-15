@@ -1,0 +1,126 @@
+{
+  "seed": 42,
+  "min_total_samples": 1000,
+  "sources": [
+    {
+      "name": "custom",
+      "path": "data/raw/custom/**/*.*",
+      "format": "auto"
+    },
+    {
+      "name": "doc",
+      "path": "data/raw/doc/**/*.*",
+      "format": "auto"
+    },
+    {
+      "name": "hf_code_contests",
+      "path": "data/raw/hf/code_contests/train.jsonl",
+      "format": "jsonl"
+    },
+    {
+      "name": "hf_apps",
+      "path": "data/raw/hf/apps/train.jsonl",
+      "format": "jsonl"
+    },
+    {
+      "name": "hf_taco_train",
+      "path": "data/raw/hf/taco/train.jsonl",
+      "format": "jsonl"
+    },
+    {
+      "name": "hf_openmath_correct",
+      "path": "data/raw/hf/openmathinstruct/correct_solutions/train .jsonl",
+      "format": "jsonl"
+    },
+    {
+      "name": "hf_openmath_incorrect",
+      "path": "data/raw/hf/openmathinstruct/incorrect_solutions/train.jsonl",
+      "format": "jsonl"
+    },
+    {
+      "name": "hf_stackv2_content",
+      "path": "data/raw/hf/stackv2_content/train.jsonl",
+      "format": "jsonl"
+    },
+    {
+      "name": "hf_ling_coder_sft",
+      "path": "data/raw/hf/ling_coder_sft/train_3_1M.jsonl",
+      "format": "jsonl"
+    }
+  ],
+  "output": {
+    "collected": "data/interim/01_collected.jsonl",
+    "cleaned": "data/interim/02_cleaned.jsonl",
+    "filtered": "data/interim/03_filtered.jsonl",
+    "deduped": "data/interim/04_deduped.jsonl",
+    "train": "data/open/Ryuu_Developer_v1/train.jsonl",
+    "test": "data/open/Ryuu_Developer_v1/test.jsonl",
+    "stats": "data/open/Ryuu_Developer_v1/stats.json",
+    "tokenizer": "tokenizer/bpe_tokenizer_postproc.json",
+    "tokenized_dir": "data/open/Ryuu_Developer_v1/tokenized",
+    "dpo_seed": "data/dpo/ryuu_dpo_seed.jsonl"
+  },
+  "split": {
+    "train_ratio":0.98,
+    "test_ratio": 0.02,
+    "stratify_by_source": true 
+  },
+  "quality": {
+    "min_prompt_chars": 12,
+    "max_prompt_chars": 2000,
+    "min_response_chars": 24,
+    "max_response_chars": 16000,
+    "min_prompt_tokens": 3,
+    "min_response_tokens": 8,
+    "max_total_tokens": 2048,
+    "ascii_ratio_floor": 0.6,
+    "max_repeat_line_ratio": 0.55,
+    "max_url_ratio": 0.12,
+    "max_symbol_ratio": 0.5,
+    "min_unique_words_ratio": 0.22,
+    "forbidden_substrings": [
+      "<script",
+      "lorem ipsum",
+      "buy now",
+      "click here"
+    ]
+  },
+  "source_caps": {
+    "hf_openmath_correct": 350000,
+    "hf_openmath_incorrect": 350000,
+    "hf_ling_coder_sft": 3100000
+  },
+  "tokenizer": {
+    "vocab_size":  50257,
+    "min_frequency": 2,
+    "special_tokens": [
+      "<pad>",
+      "<unk>",
+      "<s>",
+      "</s>",
+      "<|user|>",
+      "<|assistant|>",
+      "<|endofturn|>"
+    ]
+  },
+  "performance": {
+    "workers": 8,
+    "chunk_size": 6000
+  },
+  "sharding": {
+    "tokens_per_shard": 50097152,
+    "context_size": 30548
+  },
+  "dpo": {
+    "max_pairs": 400000,
+    "min_chosen_tokens": 20,
+    "min_rejected_tokens": 12,
+    "swap_probability": 0.65
+  },
+  "validation": {
+    "require_source_coverage": true,
+    "max_prompt_overlap_ratio": 0.01,
+    "min_train_rows": 100,
+    "min_test_rows": 10
+  }
+}
