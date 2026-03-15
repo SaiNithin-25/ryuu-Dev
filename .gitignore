@@ -13,11 +13,8 @@ venv/
 *.code-workspace
 
 # Data artifacts
-data/raw/
-data/clean/
-data/merged/
-data/shards/
-data/meta/
+data_pipelines/
+data/
 
 # Model artifacts
 *.pt
@@ -32,3 +29,16 @@ bpe_tokenizer.json
 logs/
 wandb/
 tensorboard/
+
+# Misc
+.DS_Store
+*.log
+*.tmp
+
+#runs
+ run_all_checks.bat
+ run_dashboard.bat
+        run_data_pipeline.bat
+        run_dpo_train.bat
+        run_train.bat
+        runs/
