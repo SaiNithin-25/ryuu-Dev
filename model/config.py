@@ -8,8 +8,8 @@ class RyuuGPTConfig:
     """
     # Core architecture
     vocab_size: int                 # Must match tokenizer vocab size
-    context_size: int = 1024        # Extended context for code completion
-    n_layer: int = 16               # Depth (transformer blocks)
+    context_size: int = 768        # Extended context for code completion
+    n_layer: int = 12               # Depth (transformer blocks)
     n_head: int = 12                # Multi-head attention count
     n_embd: int = 768               # Embedding dimension
 
