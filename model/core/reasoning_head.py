@@ -1,4 +1,4 @@
-# model/core/reasoning_head_v4.py
+# model/core/reasoning_head.py
 
 import torch
 import torch.nn as nn
@@ -9,11 +9,13 @@ class ReasoningHeadV4(nn.Module):
     """
     ReasoningHead V4.1 — Curriculum + Token-level Signals
 
-    Adds:
-    - Token NLL signal
-    - Token entropy signal
-    - Token confidence gap signal
-    - Curriculum-gated auxiliary loss
+    FIXES:
+    - _current_step now stored as plain int attribute (was silently ignored)
+    - scale==0.0 gate now returns loss=torch.tensor(0.0) instead of None
+      so train_reason_ema actually accumulates from step 0
+    - confidence_head indentation fixed (was broken __init__ layout)
+    - reg_head loss now uses .abs().mean() instead of .pow(2).mean()
+      to avoid squaring already-small values into near-zero
     """
 
     def __init__(
@@ -24,16 +26,18 @@ class ReasoningHeadV4(nn.Module):
         dropout: float = 0.1,
         warmup_steps: int = 3_000,
         full_steps: int = 12_000,
-        token_signal_dim: int = 3,  # NLL, entropy, confidence gap
+        token_signal_dim: int = 3,
     ):
         super().__init__()
 
         self.hidden_dim = hidden_dim
         self.reasoning_dim = reasoning_dim
         self.num_layers_used = num_layers_used
-
         self.warmup_steps = warmup_steps
         self.full_steps = full_steps
+
+        # FIX: store as plain int so trainer assignment works
+        self._current_step = 0
 
         # ---- Layer importance ----
         self.layer_logits = nn.Parameter(torch.zeros(num_layers_used))
@@ -43,14 +47,14 @@ class ReasoningHeadV4(nn.Module):
             nn.Linear(token_signal_dim, hidden_dim),
             nn.GELU(),
         )
-        # ---- Confidence head ----
+
+        # ---- Confidence head (indentation fixed) ----
         self.confidence_head = nn.Sequential(
             nn.Linear(reasoning_dim, reasoning_dim // 2),
             nn.GELU(),
             nn.Linear(reasoning_dim // 2, 1),
-            nn.Sigmoid(),  # confidence in [0,1]
-)
-
+            nn.Sigmoid(),
+        )
 
         # ---- Token-level attention ----
         self.token_attn = nn.Sequential(
@@ -83,24 +87,13 @@ class ReasoningHeadV4(nn.Module):
 
     # --------------------------------------------------
     def _compute_token_signals(self, logits, targets):
-        """
-        Returns token-level signals (B, T, 3):
-          [NLL, entropy, confidence_gap]
-        """
         with torch.no_grad():
             log_probs = F.log_softmax(logits, dim=-1)
             probs = log_probs.exp()
-
-            # NLL
             nll = -log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
-
-            # Entropy
             entropy = -(probs * log_probs).sum(dim=-1)
-
-            # Confidence gap
             top2 = torch.topk(probs, k=2, dim=-1).values
             conf_gap = top2[..., 0] - top2[..., 1]
-
         return torch.stack([nll, entropy, conf_gap], dim=-1)
 
     # --------------------------------------------------
@@ -111,36 +104,29 @@ class ReasoningHeadV4(nn.Module):
         logits=None,
         targets=None,
     ):
-        """
-        Args:
-          hidden_states: list[(B,T,D)]
-          logits: (B,T,V) required for token signals
-          targets: (B,T)
-        """
-
         layers = hidden_states[-self.num_layers_used:]
         B, T, D = layers[0].shape
         device = layers[0].device
 
-        step = getattr(self, "_current_step", 0)
+        step = int(self._current_step) if self._current_step is not None else 0
         scale, phase = self._curriculum_scale(step)
         layer_weights = F.softmax(self.layer_logits, dim=0)
 
-        # ---- Gate OFF ----
+        # FIX: return loss=zero tensor (not None) so EMA accumulates
         if scale == 0.0:
             return {
                 "scores": torch.zeros(B, self.reasoning_dim, device=device),
-                "loss": None,
+                "loss": torch.tensor(0.0, device=device),
                 "info": {
                     "phase": 0,
-                    "scale": 0.0, 
-                    "layer_weights": layer_weights.detach()
-                        },
+                    "scale": 0.0,
+                    "layer_weights": layer_weights.detach(),
+                },
             }
 
         # ---- Layer fusion ----
         top_bias = torch.zeros_like(layer_weights)
-        top_bias[-1]=1.0
+        top_bias[-1] = 1.0
         layer_weights = (1 - scale) * top_bias + scale * layer_weights
         fused = sum(w * h for w, h in zip(layer_weights, layers))
 
@@ -163,14 +149,12 @@ class ReasoningHeadV4(nn.Module):
 
         # ---- Reasoning vector ----
         reasoning_vec = self.proj(pooled)
-        confidence = self.confidence_head(reasoning_vec).squeeze(-1)  # (B,)
+        confidence = self.confidence_head(reasoning_vec).squeeze(-1)
 
-
-        # ---- Auxiliary loss ----
+        # FIX: use .abs().mean() — pow(2) collapses tiny values to near-zero
         reg_logits = self.reg_head(reasoning_vec).squeeze(-1)
-        base_loss = reg_logits.pow(2).mean()
+        base_loss = reg_logits.abs().mean()
         reasoning_loss = scale * base_loss
-        
 
         # ---- Diagnostics ----
         info = {
@@ -183,14 +167,14 @@ class ReasoningHeadV4(nn.Module):
         }
 
         if token_signals is not None:
-            info["avg_nll"] = token_signals[..., 0].mean().detach()
-            info["avg_entropy"] = token_signals[..., 1].mean().detach()
+            info["avg_nll"]      = token_signals[..., 0].mean().detach()
+            info["avg_entropy"]  = token_signals[..., 1].mean().detach()
             info["avg_conf_gap"] = token_signals[..., 2].mean().detach()
 
         return {
-            "scores": reasoning_vec,
-            "loss": reasoning_loss,
-            "confidence": confidence.mean().detach(),  # scalar
-            "info": info,
-            "token_weights": token_weights.detach()  # (B, T)
+            "scores":       reasoning_vec,
+            "loss":         reasoning_loss,
+            "confidence":   confidence.mean().detach(),
+            "info":         info,
+            "token_weights": token_weights.detach(),
         }

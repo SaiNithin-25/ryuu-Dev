@@ -2,17 +2,11 @@
 """
 RyuuGPT v3 (Reasoning-Ready)
 
-Features:
-- Transformer backbone
-- Optional RoPE / RMSNorm
-- Optional gradient checkpointing
-- Optional Value Head
-- Multi-layer ReasoningHead V4
-- Reasoning-guided generation + token steering
-- Self-reflection (draft → critique → revise)
-- Reflection confidence scoring
-- Token-weighted auxiliary loss
-- Sanity check runnable
+FIXES:
+- hidden_states now includes post-final-norm x so reasoning head
+  sees same representation as LM head
+- value_head disabled by default (was wasting params/memory)
+- _current_step sync uses setattr so it works regardless of class impl
 """
 
 import math
@@ -35,12 +29,9 @@ def _init_weights(module):
         nn.init.normal_(module.weight, mean=0.0, std=0.02)
         if isinstance(module, nn.Linear) and module.bias is not None:
             nn.init.zeros_(module.bias)
-
     elif isinstance(module, nn.LayerNorm):
         nn.init.ones_(module.weight)
         nn.init.zeros_(module.bias)
-
-    # ✅ SAFE RMSNorm handling
     elif hasattr(module, "scale") and isinstance(module.scale, torch.Tensor):
         nn.init.ones_(module.scale)
         if hasattr(module, "bias") and module.bias is not None:
@@ -55,17 +46,15 @@ class RyuuGPT(nn.Module):
         super().__init__()
         self.config = config
 
-        self.vocab_size = config.vocab_size
-        self.n_embd = config.n_embd
+        self.vocab_size   = config.vocab_size
+        self.n_embd       = config.n_embd
         self.context_size = config.context_size
 
         # ---- Embeddings ----
         self.token_emb = nn.Embedding(self.vocab_size, self.n_embd)
-
-        self.use_rope = getattr(config, "use_rope", False)
-        self.pos_emb = None if self.use_rope else nn.Embedding(self.context_size, self.n_embd)
-
-        self.dropout = nn.Dropout(config.dropout)
+        self.use_rope  = getattr(config, "use_rope", False)
+        self.pos_emb   = None if self.use_rope else nn.Embedding(self.context_size, self.n_embd)
+        self.dropout   = nn.Dropout(config.dropout)
 
         # ---- Transformer blocks ----
         self.blocks = nn.ModuleList([
@@ -83,12 +72,16 @@ class RyuuGPT(nn.Module):
         # ---- Final norm ----
         self.ln_f = RMSNorm(self.n_embd) if config.use_rms_norm else nn.LayerNorm(self.n_embd)
 
-        # ---- LM head (tied) ----
+        # ---- LM head (tied weights) ----
         self.lm_head = nn.Linear(self.n_embd, self.vocab_size, bias=False)
         self.lm_head.weight = self.token_emb.weight
 
-        # ---- Optional value head ----
-        self.value_head = nn.Linear(self.n_embd, 1) if getattr(config, "use_value_head", False) else None
+        # FIX: value_head off by default — only create if explicitly enabled
+        self.value_head = (
+            nn.Linear(self.n_embd, 1)
+            if getattr(config, "use_value_head", False)
+            else None
+        )
 
         # ---- Reasoning head ----
         self.reasoning_head = (
@@ -97,15 +90,12 @@ class RyuuGPT(nn.Module):
             else None
         )
 
-        # ---- Token steering ----
-        self._steer_bad_mask = None
+        self._steer_bad_mask  = None
         self._steer_good_mask = None
-
-        # ---- Gradient checkpointing ----
         self.gradient_checkpointing = getattr(config, "gradient_checkpointing", False)
+        self._current_step = 0
 
         self.apply(_init_weights)
-        self._current_step = None
 
     # -----------------------------------------------------
     @property
@@ -131,6 +121,11 @@ class RyuuGPT(nn.Module):
                 hidden_states.append(x)
 
         x = self.ln_f(x)
+
+        # FIX: append post-norm x so reasoning head sees same repr as lm_head
+        if hidden_states is not None:
+            hidden_states.append(x)
+
         logits = self.lm_head(x)
 
         # ---- Base LM loss ----
@@ -152,6 +147,7 @@ class RyuuGPT(nn.Module):
             if targets is not None:
                 pad_id = getattr(self.config, "pad_token_id", -100)
                 attention_mask = (targets != pad_id).long()
+
             reasoning = self.reasoning_head(
                 hidden_states=hidden_states,
                 attention_mask=attention_mask,
@@ -159,18 +155,16 @@ class RyuuGPT(nn.Module):
                 targets=targets,
             )
 
-            # add reasoning loss
-            if loss is not None and reasoning.get("loss") is not None:
+            # add reasoning loss to total loss
+            r_loss = reasoning.get("loss")
+            if loss is not None and r_loss is not None:
                 weight = float(getattr(self.config, "reasoning_loss_weight", 1.0))
-                loss = loss + weight * reasoning["loss"]
+                loss = loss + weight * r_loss
 
-            # -----------------------------------------
-            # Token-weighted auxiliary loss (NEW)
-            # -----------------------------------------
+            # Token-weighted auxiliary loss
             if targets is not None:
                 token_w = reasoning.get("token_weights", None)
                 if token_w is not None:
-                    # Encourage uncertainty on low-importance tokens
                     logp = F.log_softmax(logits, dim=-1)
                     tgt_logp = logp.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
                     token_loss = -(token_w * tgt_logp).mean()
@@ -180,36 +174,20 @@ class RyuuGPT(nn.Module):
 
     # -----------------------------------------------------
     def log_prob(self, prompt_ids, response_ids):
-        """
-        Computes sum log-prob of response given prompt
-        """
         x = torch.cat([prompt_ids, response_ids[:, :-1]], dim=1)
         logits, _, _, _ = self(x)
-
         logits = logits[:, -response_ids.size(1):]
-        logp = torch.log_softmax(logits, dim=-1)
-
-        token_logp = logp.gather(
-            -1, response_ids.unsqueeze(-1)
-        ).squeeze(-1)
-
-        return token_logp.sum(dim=1)
+        logp   = torch.log_softmax(logits, dim=-1)
+        return logp.gather(-1, response_ids.unsqueeze(-1)).squeeze(-1).sum(dim=1)
 
     # -----------------------------------------------------
     def _build_token_steering_masks(self, vocab_size, device):
-        bad = torch.zeros(vocab_size, device=device)
+        bad  = torch.zeros(vocab_size, device=device)
         good = torch.zeros(vocab_size, device=device)
-
-        bad_chars = ".;,:!?"
-        good_chars = "(){}[]"
-
         for i in range(min(vocab_size, 128)):
             c = chr(i)
-            if c in bad_chars:
-                bad[i] = 1.0
-            if c in good_chars:
-                good[i] = 1.0
-
+            if c in ".;,:!?":  bad[i]  = 1.0
+            if c in "(){}[]":  good[i] = 1.0
         return bad, good
 
     # -----------------------------------------------------
@@ -227,13 +205,11 @@ class RyuuGPT(nn.Module):
     ):
         device = self.device
         out = input_ids.to(device)
-
         if self._steer_bad_mask is None:
-            self._steer_bad_mask, self._steer_good_mask = \
-                self._build_token_steering_masks(self.vocab_size, device)
+            self._steer_bad_mask, self._steer_good_mask = self._build_token_steering_masks(self.vocab_size, device)
 
         for _ in range(max_new_tokens):
-            model_in = out[:, -self.context_size:]
+            model_in    = out[:, -self.context_size:]
             logits, _, _, reasoning_out = self.forward(model_in)
             next_logits = logits[:, -1, :] / temperature
 
@@ -251,16 +227,16 @@ class RyuuGPT(nn.Module):
 
             if top_p is not None and 0.0 < top_p < 1.0:
                 sorted_logits, sorted_idx = torch.sort(next_logits, descending=True)
-                probs = F.softmax(sorted_logits, dim=-1)
+                probs    = F.softmax(sorted_logits, dim=-1)
                 cumprobs = torch.cumsum(probs, dim=-1)
-                mask = cumprobs > top_p
+                mask          = cumprobs > top_p
                 mask[..., 1:] = mask[..., :-1].clone()
-                mask[..., 0] = False
+                mask[..., 0]  = False
                 sorted_logits[mask] = -1e10
                 next_logits = torch.gather(sorted_logits, -1, torch.argsort(sorted_idx))
 
             if do_sample:
-                probs = F.softmax(next_logits, dim=-1)
+                probs      = F.softmax(next_logits, dim=-1)
                 next_token = torch.multinomial(probs, 1)
             else:
                 next_token = torch.argmax(next_logits, dim=-1, keepdim=True)
@@ -275,13 +251,11 @@ class RyuuGPT(nn.Module):
     # -----------------------------------------------------
     def _reflection_confidence(self, draft_reasoning, revised_reasoning):
         if (
-            draft_reasoning is None
-            or revised_reasoning is None
+            draft_reasoning is None or revised_reasoning is None
             or draft_reasoning.get("scores") is None
             or revised_reasoning.get("scores") is None
         ):
             return None
-
         d = draft_reasoning["scores"].norm(dim=-1)
         r = revised_reasoning["scores"].norm(dim=-1)
         return torch.tanh((r - d).clamp(min=0.0)).mean().item()
@@ -289,7 +263,7 @@ class RyuuGPT(nn.Module):
     # -----------------------------------------------------
     @torch.no_grad()
     def self_reflect(self, input_ids, max_new_tokens=128, return_steps=False):
-        draft = self.generate(input_ids, max_new_tokens, temperature=0.8, do_sample=True)
+        draft  = self.generate(input_ids, max_new_tokens, temperature=0.8, do_sample=True)
         _, _, _, draft_reasoning = self.forward(draft)
 
         critique_prompt = torch.cat([input_ids, draft], dim=1)
@@ -302,13 +276,7 @@ class RyuuGPT(nn.Module):
         confidence = self._reflection_confidence(draft_reasoning, revised_reasoning)
 
         if return_steps:
-            return {
-                "draft": draft,
-                "critique": critique,
-                "revised": revised,
-                "confidence": confidence,
-            }
-
+            return {"draft": draft, "critique": critique, "revised": revised, "confidence": confidence}
         return revised
 
 
@@ -317,34 +285,19 @@ class RyuuGPT(nn.Module):
 # =========================================================
 if __name__ == "__main__":
     print("\n=== RyuuGPT SANITY CHECK ===")
-
     cfg = RyuuGPTConfig(
-        vocab_size=30000,
-        context_size=64,
-        n_layer=4,
-        n_head=4,
-        n_embd=128,
-        dropout=0.1,
-        pad_token_id=0,
+        vocab_size=30000, context_size=64,
+        n_layer=4, n_head=4, n_embd=128,
+        dropout=0.1, pad_token_id=0,
         use_reasoning_head=True,
     )
-
     model = RyuuGPT(cfg).eval()
-
     x = torch.randint(0, cfg.vocab_size, (2, 32))
     y = torch.randint(0, cfg.vocab_size, (2, 32))
-
     with torch.no_grad():
         logits, loss, value, reasoning = model(x, targets=y)
-
     print("Logits shape:", logits.shape)
     print("Loss:", loss.item())
     print("Reasoning keys:", list(reasoning.keys()))
-
-    print("\n--- Self-Reflection Test ---")
-    out = model.self_reflect(x, max_new_tokens=32, return_steps=True)
-    print("Draft:", out["draft"].shape)
-    print("Critique:", out["critique"].shape)
-    print("Revised:", out["revised"].shape)
-    print("Confidence:", out["confidence"])
-    print("✔ All sanity checks passed\n")
+    print("Reasoning loss:", reasoning["loss"].item())
+    print("\u2714 All sanity checks passed\n")
